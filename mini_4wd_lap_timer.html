@@ -1,0 +1,888 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Mini 4WD Lap Timer</title>
+  <!-- Tailwind CSS CDN -->
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script>
+    tailwind.config = {
+      theme: {
+        extend: {
+          colors: {
+            brand: {
+              cyan: '#00f2fe',
+              emerald: '#10b981',
+              rose: '#f43f5e',
+              amber: '#f59e0b',
+              dark: '#0b0f19',
+              card: '#111827',
+              border: '#1f293d'
+            }
+          },
+          fontFamily: {
+            mono: ['"JetBrains Mono"', 'ui-monospace', 'SFMono-Regular', 'Menlo', 'monospace']
+          }
+        }
+      }
+    }
+  </script>
+  <style>
+    /* レース用デジタルディスプレイ風のタイマースタイル */
+    .digital-glow {
+      text-shadow: 0 0 20px rgba(0, 242, 254, 0.4);
+    }
+    .digital-glow-active {
+      text-shadow: 0 0 25px rgba(16, 185, 129, 0.6);
+    }
+    /* スライダーとUIのカスタマイズ */
+    input[type=range] {
+      accent-color: #00f2fe;
+    }
+    /* アスペクト比維持用コンテナ */
+    .video-viewport {
+      position: relative;
+      width: 100%;
+      aspect-ratio: 4 / 3;
+      background-color: #000;
+      border-radius: 0.75rem;
+      overflow: hidden;
+    }
+  </style>
+</head>
+<body class="bg-slate-950 text-slate-100 min-h-screen flex flex-col font-sans selection:bg-cyan-500 selection:text-black">
+
+  <!-- ヘッダー -->
+  <header class="border-b border-slate-800 bg-slate-900/80 backdrop-blur px-4 py-3 sticky top-0 z-30 flex items-center justify-between">
+    <div class="flex items-center space-x-2">
+      <div class="w-3 h-3 rounded-full bg-cyan-400 animate-pulse"></div>
+      <h1 class="text-base sm:text-lg font-bold tracking-wider text-cyan-400">
+        MINI 4WD LAP TIMER <span class="text-xs px-2 py-0.5 rounded bg-cyan-950/70 border border-cyan-800 text-cyan-300 ml-1">PRO</span>
+      </h1>
+    </div>
+    <!-- 状態バッジ -->
+    <div id="statusBadge" class="text-xs font-mono font-bold px-3 py-1 rounded-full uppercase bg-slate-800 text-slate-400 border border-slate-700">
+      IDLE
+    </div>
+  </header>
+
+  <!-- メインコンテンツ -->
+  <main class="flex-1 max-w-7xl w-full mx-auto p-3 sm:p-5 grid grid-cols-1 lg:grid-cols-12 gap-5">
+    
+    <!-- 左ペイン：カメラ映像 ＆ ROI（検知領域）設定 (7/12) -->
+    <section class="lg:col-span-7 flex flex-col space-y-4">
+      
+      <!-- 映像プレビュー & オーバーレイCanvas -->
+      <div class="video-viewport border-2 border-slate-800 shadow-2xl relative select-none">
+        <!-- 実際のWebcamビデオ要素（非表示で取得しCanvasに描画） -->
+        <video id="webcam" playsinline autoplay muted class="hidden"></video>
+        
+        <!-- インタラクティブな描画・操作Canvas -->
+        <canvas id="viewCanvas" class="w-full h-full block cursor-crosshair"></canvas>
+
+        <!-- カメラ未接続時のプレースホルダー -->
+        <div id="cameraPrompt" class="absolute inset-0 flex flex-col items-center justify-center bg-slate-950/90 text-center p-6 space-y-3 z-10">
+          <svg class="w-12 h-12 text-cyan-500/70 animate-bounce" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M15 10l4.553-2.276A1 1 0 0121 8.618v6.764a1 1 0 01-1.447.894L15 14M5 18h8a2 2 0 002-2V8a2 2 0 00-2-2H5a2 2 0 00-2 2v8a2 2 0 002 2z"></path>
+          </svg>
+          <p class="text-sm sm:text-base font-medium text-slate-300">カメラへのアクセスを許可してください</p>
+          <button id="btnStartCamera" class="px-5 py-2.5 rounded-lg bg-cyan-500 hover:bg-cyan-400 text-slate-950 font-bold text-sm shadow-lg shadow-cyan-500/20 transition-all">
+            カメラを起動する
+          </button>
+        </div>
+
+        <!-- 検知フラッシュ表示インジケーター -->
+        <div id="detectionIndicator" class="pointer-events-none absolute top-3 left-3 bg-rose-600/90 text-white font-mono text-xs font-bold px-2.5 py-1 rounded-md opacity-0 transition-opacity duration-150 flex items-center space-x-1.5 shadow-lg">
+          <span class="w-2 h-2 rounded-full bg-white animate-ping"></span>
+          <span>DETECTED</span>
+        </div>
+      </div>
+
+      <!-- リアルタイム感度メーター -->
+      <div class="bg-slate-900 border border-slate-800 rounded-xl p-3 sm:p-4 space-y-2">
+        <div class="flex items-center justify-between text-xs">
+          <span class="font-semibold text-slate-300">検知センサー変化量 (Delta)</span>
+          <span class="font-mono text-slate-400">現在値: <strong id="deltaValText" class="text-cyan-400">0</strong> / 閾値: <strong id="threshValText" class="text-amber-400">30</strong></span>
+        </div>
+        <!-- ゲージバー -->
+        <div class="w-full bg-slate-950 h-3 rounded-full overflow-hidden relative border border-slate-800">
+          <div id="deltaGauge" class="bg-cyan-400 h-full w-0 transition-all duration-75"></div>
+          <!-- 閾値マーカー -->
+          <div id="threshMarker" class="absolute top-0 bottom-0 w-0.5 bg-amber-400 z-10" style="left: 30%;"></div>
+        </div>
+      </div>
+
+      <!-- カメラ操作・ROIスライダーコントロール -->
+      <div class="bg-slate-900 border border-slate-800 rounded-xl p-4 space-y-4">
+        <div class="flex flex-wrap items-center justify-between gap-2 border-b border-slate-800 pb-3">
+          <span class="text-xs font-bold uppercase tracking-wider text-slate-400">カメラ ＆ ゲート設定</span>
+          <div class="flex space-x-2">
+            <button id="btnFlipCamera" class="text-xs px-3 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 font-medium transition-colors border border-slate-700">
+              カメラ切替 (内外)
+            </button>
+            <button id="btnResetROI" class="text-xs px-3 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 font-medium transition-colors border border-slate-700">
+              枠位置リセット
+            </button>
+          </div>
+        </div>
+
+        <p class="text-xs text-slate-400 leading-relaxed">
+          ※ 画面上の<strong class="text-cyan-400">緑枠（検知ゲート）</strong>をドラッグして、コースの特定レーン（1レーン分の幅）に重ねてください。右下角をドラッグするとサイズ変更できます。
+        </p>
+
+        <!-- パラメータスライダー群 -->
+        <div class="grid grid-cols-1 sm:grid-cols-2 gap-3 text-xs">
+          <!-- 閾値 (Sensitivity Threshold) -->
+          <div class="space-y-1">
+            <div class="flex justify-between">
+              <label for="rangeThreshold" class="text-slate-300">検知感度 (閾値)</label>
+              <span id="rangeThresholdVal" class="font-mono text-cyan-400">30</span>
+            </div>
+            <input id="rangeThreshold" type="range" min="5" max="100" value="30" class="w-full h-1.5 bg-slate-800 rounded-lg cursor-pointer">
+          </div>
+
+          <!-- 最小ラップ時間 (Debounce Filter) -->
+          <div class="space-y-1">
+            <div class="flex justify-between">
+              <label for="rangeDebounce" class="text-slate-300">最小ラップ / 不感時間</label>
+              <span id="rangeDebounceVal" class="font-mono text-cyan-400">1.5 秒</span>
+            </div>
+            <input id="rangeDebounce" type="range" min="0.5" max="5.0" step="0.1" value="1.5" class="w-full h-1.5 bg-slate-800 rounded-lg cursor-pointer">
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- 右ペイン：タイマー表示 ＆ 操作ボタン ＆ ラップ結果 (5/12) -->
+    <section class="lg:col-span-5 flex flex-col space-y-4">
+      
+      <!-- メインデジタルタイマーボード -->
+      <div class="bg-slate-900 border border-slate-800 rounded-xl p-5 text-center shadow-2xl relative overflow-hidden flex flex-col justify-center">
+        <div class="flex items-center justify-between text-xs text-slate-400 uppercase tracking-widest font-mono mb-2">
+          <span>Current Lap</span>
+          <span id="lapCounter" class="text-cyan-400 font-bold text-sm">LAP 0 / 10</span>
+        </div>
+
+        <!-- 大型タイム表示 (MM:SS.mmm) -->
+        <div id="mainTimerDisplay" class="font-mono text-4xl sm:text-5xl font-black text-cyan-300 tracking-wider py-2 digital-glow">
+          00:00.000
+        </div>
+
+        <!-- トータル累計時間 -->
+        <div class="text-xs font-mono text-slate-400 mt-1">
+          TOTAL TIME: <span id="totalTimerDisplay" class="text-slate-200 font-bold">00:00.000</span>
+        </div>
+
+        <!-- 状態ガイダンステキスト -->
+        <div id="guidanceText" class="mt-4 py-2 px-3 rounded-lg bg-slate-950/80 border border-slate-800 text-xs font-medium text-slate-300">
+          「スタート待機」を押してから、マシンを通過させてください。
+        </div>
+      </div>
+
+      <!-- コントロールボタン群 -->
+      <div class="grid grid-cols-3 gap-2">
+        <!-- スタート待機 / ARM -->
+        <button id="btnArm" class="py-3 px-2 rounded-xl bg-gradient-to-r from-emerald-600 to-teal-500 hover:from-emerald-500 hover:to-teal-400 text-white font-bold text-xs sm:text-sm shadow-lg shadow-emerald-900/30 transition-all flex flex-col items-center justify-center space-y-1">
+          <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M14.752 11.168l-3.197-2.132A1 1 0 0010 9.87v4.263a1 1 0 001.555.832l3.197-2.132a1 1 0 000-1.664z"></path>
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 12a9 9 0 11-18 0 9 9 0 0118 0z"></path>
+          </svg>
+          <span>スタート待機</span>
+        </button>
+
+        <!-- 中止 / STOP (途中ラップ破棄して確定分のみ残す) -->
+        <button id="btnStop" class="py-3 px-2 rounded-xl bg-gradient-to-r from-rose-700 to-red-600 hover:from-rose-600 hover:to-red-500 text-white font-bold text-xs sm:text-sm shadow-lg shadow-rose-900/30 transition-all opacity-50 cursor-not-allowed flex flex-col items-center justify-center space-y-1" disabled>
+          <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 12a9 9 0 11-18 0 9 9 0 0118 0z"></path>
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 10a1 1 0 011-1h4a1 1 0 011 1v4a1 1 0 01-1 1h-4a1 1 0 01-1-1v-4z"></path>
+          </svg>
+          <span>計測中止</span>
+        </button>
+
+        <!-- リセット / RESET -->
+        <button id="btnReset" class="py-3 px-2 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-200 font-bold text-xs sm:text-sm border border-slate-700 transition-all flex flex-col items-center justify-center space-y-1">
+          <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"></path>
+          </svg>
+          <span>リセット</span>
+        </button>
+      </div>
+
+      <!-- 計測サマリーカード（完了・中止時に表示） -->
+      <div id="summaryCard" class="hidden bg-gradient-to-br from-slate-900 to-slate-950 border border-cyan-800/50 rounded-xl p-4 shadow-xl space-y-3">
+        <div class="flex items-center justify-between border-b border-slate-800 pb-2">
+          <span class="text-xs font-bold text-cyan-400 uppercase tracking-wider">セッション集計</span>
+          <span id="summaryStatusText" class="text-xs px-2 py-0.5 rounded bg-cyan-950 text-cyan-300 font-mono">COMPLETE</span>
+        </div>
+        <div class="grid grid-cols-3 gap-2 text-center">
+          <div class="bg-slate-900/80 p-2 rounded-lg border border-slate-800">
+            <div class="text-[10px] text-slate-400">有効周回数</div>
+            <div id="summaryLaps" class="text-base font-bold font-mono text-slate-200">0</div>
+          </div>
+          <div class="bg-slate-900/80 p-2 rounded-lg border border-slate-800">
+            <div class="text-[10px] text-slate-400">最速ラップ (BEST)</div>
+            <div id="summaryBest" class="text-base font-bold font-mono text-emerald-400">--:--.---</div>
+          </div>
+          <div class="bg-slate-900/80 p-2 rounded-lg border border-slate-800">
+            <div class="text-[10px] text-slate-400">平均ラップ (AVG)</div>
+            <div id="summaryAvg" class="text-base font-bold font-mono text-cyan-400">--:--.---</div>
+          </div>
+        </div>
+      </div>
+
+      <!-- ラップ履歴テーブル -->
+      <div class="bg-slate-900 border border-slate-800 rounded-xl flex-1 flex flex-col overflow-hidden min-h-[220px]">
+        <div class="bg-slate-950 px-4 py-2.5 border-b border-slate-800 flex justify-between items-center text-xs font-bold text-slate-400">
+          <span>LAP RECORD (MAX 10)</span>
+          <span id="bestLapBadge" class="hidden text-[10px] px-2 py-0.5 rounded bg-emerald-950 border border-emerald-700 text-emerald-300 font-mono">
+            BEST HIGHLIGHTED
+          </span>
+        </div>
+
+        <div class="flex-1 overflow-y-auto">
+          <table class="w-full text-left border-collapse text-xs">
+            <thead class="sticky top-0 bg-slate-950/90 text-slate-400 border-b border-slate-800 font-mono">
+              <tr>
+                <th class="py-2 px-3">LAP</th>
+                <th class="py-2 px-3">LAP TIME</th>
+                <th class="py-2 px-3 text-right">TOTAL</th>
+              </tr>
+            </thead>
+            <tbody id="lapTableBody" class="divide-y divide-slate-800 font-mono">
+              <!-- 行はJavaScriptで動的に追加 -->
+              <tr>
+                <td colspan="3" class="py-8 text-center text-slate-500 font-sans">
+                  計測されたラップはありません
+                </td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+    </section>
+  </main>
+
+  <!-- クライアントロジック (HTML5 Canvas + Web Audio API + State Machine) -->
+  <script>
+    /**
+     * ミニ四駆用ラップタイマー 実装ロジック
+     */
+
+    // --- 状態管理ステート ---
+    const STATE = {
+      IDLE: 'IDLE',         // 待機・位置合わせ中
+      ARMED: 'ARMED',       // スタート待機（最初の通過待ち）
+      RUNNING: 'RUNNING',   // 計測中
+      FINISHED: 'FINISHED'  // 上限到達または中止完了
+    };
+
+    let currentState = STATE.IDLE;
+    const MAX_LAPS = 10;
+
+    // --- 時間計測用変数 ---
+    let sessionStartTime = 0;
+    let lapStartTime = 0;
+    let recordedLaps = []; // { lapNumber, lapTime, splitTime }
+    let timerAnimFrame = null;
+    let lastDetectionTime = 0;
+
+    // --- カメラ＆画像解析用変数 ---
+    let videoStream = null;
+    let currentFacingMode = 'environment'; // 'environment' (アウトカメラ) or 'user' (インカメラ)
+    const video = document.getElementById('webcam');
+    const canvas = document.getElementById('viewCanvas');
+    const ctx = canvas.getContext('2d', { willReadFrequently: true });
+
+    // オフスクリーン用Canvas（差分計算の負荷軽減用）
+    const sampleCanvas = document.createElement('canvas');
+    const sampleCtx = sampleCanvas.getContext('2d', { willReadFrequently: true });
+    sampleCanvas.width = 64;
+    sampleCanvas.height = 64;
+    let prevSamplePixels = null;
+
+    // --- ROI (検知領域: 0.0〜1.0 の正規化座標) ---
+    // コース1レーン分の幅を想定した初期設定（画面中央付近）
+    let roi = {
+      x: 0.35,
+      y: 0.35,
+      w: 0.30,
+      h: 0.30
+    };
+
+    // ROIドラッグ・リサイズ操作用変数
+    let isDragging = false;
+    let isResizing = false;
+    let dragStart = { x: 0, y: 0 };
+    let initialRoi = { ...roi };
+
+    // パラメータ
+    let sensitivityThreshold = 30; // 0〜100
+    let debounceSeconds = 1.5;     // 最小ラップ時間（秒）
+
+    // --- DOM要素の参照 ---
+    const statusBadge = document.getElementById('statusBadge');
+    const cameraPrompt = document.getElementById('cameraPrompt');
+    const btnStartCamera = document.getElementById('btnStartCamera');
+    const btnFlipCamera = document.getElementById('btnFlipCamera');
+    const btnResetROI = document.getElementById('btnResetROI');
+
+    const detectionIndicator = document.getElementById('detectionIndicator');
+    const deltaGauge = document.getElementById('deltaGauge');
+    const deltaValText = document.getElementById('deltaValText');
+    const threshValText = document.getElementById('threshValText');
+    const threshMarker = document.getElementById('threshMarker');
+
+    const rangeThreshold = document.getElementById('rangeThreshold');
+    const rangeThresholdVal = document.getElementById('rangeThresholdVal');
+    const rangeDebounce = document.getElementById('rangeDebounce');
+    const rangeDebounceVal = document.getElementById('rangeDebounceVal');
+
+    const mainTimerDisplay = document.getElementById('mainTimerDisplay');
+    const totalTimerDisplay = document.getElementById('totalTimerDisplay');
+    const lapCounter = document.getElementById('lapCounter');
+    const guidanceText = document.getElementById('guidanceText');
+
+    const btnArm = document.getElementById('btnArm');
+    const btnStop = document.getElementById('btnStop');
+    const btnReset = document.getElementById('btnReset');
+
+    const summaryCard = document.getElementById('summaryCard');
+    const summaryStatusText = document.getElementById('summaryStatusText');
+    const summaryLaps = document.getElementById('summaryLaps');
+    const summaryBest = document.getElementById('summaryBest');
+    const summaryAvg = document.getElementById('summaryAvg');
+    const bestLapBadge = document.getElementById('bestLapBadge');
+    const lapTableBody = document.getElementById('lapTableBody');
+
+    // --- Web Audio API (シンセビープ音) ---
+    let audioCtx = null;
+    function initAudio() {
+      if (!audioCtx) {
+        const AudioContextClass = window.AudioContext || window.webkitAudioContext;
+        if (AudioContextClass) {
+          audioCtx = new AudioContextClass();
+        }
+      }
+      if (audioCtx && audioCtx.state === 'suspended') {
+        audioCtx.resume();
+      }
+    }
+
+    // 周波数と長さを指定して電子音を再生
+    function playBeep(freq = 880, duration = 0.1, type = 'sine') {
+      try {
+        initAudio();
+        if (!audioCtx) return;
+
+        const osc = audioCtx.createOscillator();
+        const gain = audioCtx.createGain();
+
+        osc.type = type;
+        osc.frequency.setValueAtTime(freq, audioCtx.currentTime);
+
+        gain.gain.setValueAtTime(0.3, audioCtx.currentTime);
+        gain.gain.exponentialRampToValueAtTime(0.001, audioCtx.currentTime + duration);
+
+        osc.connect(gain);
+        gain.connect(audioCtx.destination);
+
+        osc.start();
+        osc.stop(audioCtx.currentTime + duration);
+      } catch (e) {
+        console.warn('Audio play error:', e);
+      }
+    }
+
+    // 音響効果プリセット
+    const SOUNDS = {
+      start: () => {
+        // スタート通過：高めのピピッ音
+        playBeep(1200, 0.15, 'triangle');
+      },
+      lap: () => {
+        // ラップ通過：2連ビープ
+        playBeep(950, 0.08, 'sine');
+        setTimeout(() => playBeep(1400, 0.1, 'sine'), 100);
+      },
+      stop: () => {
+        // 中止・フィニッシュ：長めのトーン
+        playBeep(440, 0.3, 'sawtooth');
+      }
+    };
+
+    // --- 時間フォーマットユーティリティ ---
+    function formatTime(ms) {
+      if (ms < 0 || isNaN(ms)) ms = 0;
+      const minutes = Math.floor(ms / 60000);
+      const seconds = Math.floor((ms % 60000) / 1000);
+      const milliseconds = Math.floor(ms % 1000);
+
+      const mStr = String(minutes).padStart(2, '0');
+      const sStr = String(seconds).padStart(2, '0');
+      const msStr = String(milliseconds).padStart(3, '0');
+
+      return `${mStr}:${sStr}.${msStr}`;
+    }
+
+    // --- カメラストリームの開始・切替 ---
+    async function startCamera() {
+      try {
+        if (videoStream) {
+          videoStream.getTracks().forEach(track => track.stop());
+        }
+
+        const constraints = {
+          video: {
+            facingMode: currentFacingMode,
+            width: { ideal: 1280 },
+            height: { ideal: 720 }
+          },
+          audio: false
+        };
+
+        videoStream = await navigator.mediaDevices.getUserMedia(constraints);
+        video.srcObject = videoStream;
+        await video.play();
+
+        cameraPrompt.classList.add('hidden');
+        initAudio();
+      } catch (err) {
+        console.error('Camera access error:', err);
+        cameraPrompt.innerHTML = `
+          <div class="text-rose-500 font-bold mb-2">カメラを起動できませんでした</div>
+          <div class="text-xs text-slate-400 max-w-sm mb-4">ブラウザのカメラ権限が許可されているか、他のアプリがカメラを使用していないか確認してください。</div>
+          <button onclick="startCamera()" class="px-4 py-2 bg-slate-800 text-white rounded-lg text-xs font-bold hover:bg-slate-700">再試行</button>
+        `;
+      }
+    }
+
+    // --- UI更新ヘルパー ---
+    function updateUIState() {
+      statusBadge.textContent = currentState;
+
+      // バッジカラー
+      statusBadge.className = 'text-xs font-mono font-bold px-3 py-1 rounded-full uppercase border ';
+      if (currentState === STATE.IDLE) {
+        statusBadge.classList.add('bg-slate-800', 'text-slate-400', 'border-slate-700');
+        guidanceText.textContent = '「スタート待機」を押してから、マシンを検知ゲートへ進入させてください。';
+        guidanceText.className = 'mt-4 py-2 px-3 rounded-lg bg-slate-950/80 border border-slate-800 text-xs font-medium text-slate-300';
+      } else if (currentState === STATE.ARMED) {
+        statusBadge.classList.add('bg-amber-950/60', 'text-amber-300', 'border-amber-600', 'animate-pulse');
+        guidanceText.textContent = '【待機中】マシンがゲートを最初に通過すると自動でタイマーが始動します。';
+        guidanceText.className = 'mt-4 py-2 px-3 rounded-lg bg-amber-950/40 border border-amber-700/60 text-xs font-semibold text-amber-300';
+      } else if (currentState === STATE.RUNNING) {
+        statusBadge.classList.add('bg-emerald-950/70', 'text-emerald-300', 'border-emerald-500');
+        guidanceText.textContent = `【計測中】同一レーンへ戻ってくるとラップをカウントします。(残り: ${MAX_LAPS - recordedLaps.length} 周)`;
+        guidanceText.className = 'mt-4 py-2 px-3 rounded-lg bg-emerald-950/40 border border-emerald-600/60 text-xs font-semibold text-emerald-300';
+      } else if (currentState === STATE.FINISHED) {
+        statusBadge.classList.add('bg-cyan-950/70', 'text-cyan-300', 'border-cyan-600');
+        guidanceText.textContent = '計測が終了しました。確定したラップ結果を確認できます。';
+        guidanceText.className = 'mt-4 py-2 px-3 rounded-lg bg-cyan-950/40 border border-cyan-800 text-xs font-medium text-cyan-300';
+      }
+
+      // ボタンの有効・無効切り替え
+      if (currentState === STATE.RUNNING || currentState === STATE.ARMED) {
+        btnStop.disabled = false;
+        btnStop.classList.remove('opacity-50', 'cursor-not-allowed');
+        btnArm.disabled = true;
+        btnArm.classList.add('opacity-50', 'cursor-not-allowed');
+      } else {
+        btnStop.disabled = true;
+        btnStop.classList.add('opacity-50', 'cursor-not-allowed');
+        btnArm.disabled = false;
+        btnArm.classList.remove('opacity-50', 'cursor-not-allowed');
+      }
+
+      lapCounter.textContent = `LAP ${recordedLaps.length} / ${MAX_LAPS}`;
+    }
+
+    // --- ラップテーブルおよびサマリーの再描画 ---
+    function renderLapTable() {
+      if (recordedLaps.length === 0) {
+        lapTableBody.innerHTML = `
+          <tr>
+            <td colspan="3" class="py-8 text-center text-slate-500 font-sans">
+              計測されたラップはありません
+            </td>
+          </tr>
+        `;
+        summaryCard.classList.add('hidden');
+        bestLapBadge.classList.add('hidden');
+        return;
+      }
+
+      // 最速ラップの検出
+      const bestLapTime = Math.min(...recordedLaps.map(l => l.lapTime));
+
+      let rowsHtml = '';
+      recordedLaps.forEach((lap) => {
+        const isBest = lap.lapTime === bestLapTime && recordedLaps.length > 1;
+        rowsHtml += `
+          <tr class="${isBest ? 'bg-emerald-950/40 text-emerald-300 font-bold' : 'hover:bg-slate-800/40'} transition-colors">
+            <td class="py-2.5 px-3 flex items-center space-x-1.5">
+              <span>#${lap.lapNumber}</span>
+              ${isBest ? '<span class="text-[9px] px-1 rounded bg-emerald-500 text-slate-950 font-bold">BEST</span>' : ''}
+            </td>
+            <td class="py-2.5 px-3 ${isBest ? 'text-emerald-400 font-bold text-sm' : 'text-slate-200'}">
+              ${formatTime(lap.lapTime)}
+            </td>
+            <td class="py-2.5 px-3 text-right text-slate-400">
+              ${formatTime(lap.splitTime)}
+            </td>
+          </tr>
+        `;
+      });
+
+      lapTableBody.innerHTML = rowsHtml;
+
+      // サマリー表示の計算
+      const totalTime = recordedLaps.reduce((acc, cur) => acc + cur.lapTime, 0);
+      const avgTime = totalTime / recordedLaps.length;
+
+      summaryLaps.textContent = recordedLaps.length;
+      summaryBest.textContent = formatTime(bestLapTime);
+      summaryAvg.textContent = formatTime(avgTime);
+      summaryStatusText.textContent = currentState === STATE.FINISHED ? 'COMPLETED' : 'STOPPED';
+
+      summaryCard.classList.remove('hidden');
+      if (recordedLaps.length > 1) {
+        bestLapBadge.classList.remove('hidden');
+      }
+    }
+
+    // --- マシン通過時の検知トリガー処理 ---
+    function triggerDetection() {
+      const now = performance.now();
+
+      // デバウンスフィルタ（最小ラップ時間内の重複トリガーを無視）
+      if (now - lastDetectionTime < debounceSeconds * 1000) {
+        return;
+      }
+      lastDetectionTime = now;
+
+      // 視覚的フラッシュ表示
+      detectionIndicator.style.opacity = '1';
+      setTimeout(() => {
+        detectionIndicator.style.opacity = '0';
+      }, 350);
+
+      // ステートごとの処理
+      if (currentState === STATE.ARMED) {
+        // === スタート通過 ===
+        currentState = STATE.RUNNING;
+        sessionStartTime = now;
+        lapStartTime = now;
+        recordedLaps = [];
+        SOUNDS.start();
+        updateUIState();
+        renderLapTable();
+      } else if (currentState === STATE.RUNNING) {
+        // === ラップ確定通過 ===
+        const lapDuration = now - lapStartTime;
+        const totalDuration = now - sessionStartTime;
+        const lapNum = recordedLaps.length + 1;
+
+        recordedLaps.push({
+          lapNumber: lapNum,
+          lapTime: lapDuration,
+          splitTime: totalDuration
+        });
+
+        lapStartTime = now; // 次のラップ計測開始
+        renderLapTable();
+
+        if (recordedLaps.length >= MAX_LAPS) {
+          // 上限10ラップ到達：自動ストップ
+          currentState = STATE.FINISHED;
+          SOUNDS.stop();
+          updateUIState();
+        } else {
+          // 途中ラップ通過
+          SOUNDS.lap();
+          updateUIState();
+        }
+      }
+    }
+
+    // --- メイン解析＆描画ループ ---
+    function videoProcessingLoop() {
+      // キャンバスサイズの映像解像度同期
+      if (video.readyState === video.HAVE_ENOUGH_DATA) {
+        if (canvas.width !== video.videoWidth || canvas.height !== video.videoHeight) {
+          canvas.width = video.videoWidth || 640;
+          canvas.height = video.videoHeight || 480;
+        }
+
+        // カメラフレームの描画
+        ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+
+        // ROIのピクセル座標を計算
+        const rx = roi.x * canvas.width;
+        const ry = roi.y * canvas.height;
+        const rw = roi.w * canvas.width;
+        const rh = roi.h * canvas.height;
+
+        // 差分計算用オフスクリーンにROI領域をリサイズ描画（64x64に縮小して高速計算）
+        sampleCtx.drawImage(canvas, rx, ry, rw, rh, 0, 0, sampleCanvas.width, sampleCanvas.height);
+        const imgData = sampleCtx.getImageData(0, 0, sampleCanvas.width, sampleCanvas.height);
+        const pixels = imgData.data;
+
+        // 前フレームとの輝度差分を算出
+        if (prevSamplePixels) {
+          let diffSum = 0;
+          const totalSamples = sampleCanvas.width * sampleCanvas.height;
+
+          for (let i = 0; i < pixels.length; i += 4) {
+            // グレースケール輝度 Y
+            const y1 = 0.299 * pixels[i] + 0.587 * pixels[i + 1] + 0.114 * pixels[i + 2];
+            const y0 = 0.299 * prevSamplePixels[i] + 0.587 * prevSamplePixels[i + 1] + 0.114 * prevSamplePixels[i + 2];
+            diffSum += Math.abs(y1 - y0);
+          }
+
+          // 0〜100に正規化
+          const averageDiff = (diffSum / totalSamples);
+          const normalizedDelta = Math.min(100, Math.round(averageDiff * 2.5));
+
+          // リアルタイムゲージの更新
+          deltaGauge.style.width = `${normalizedDelta}%`;
+          deltaValText.textContent = normalizedDelta;
+
+          // 閾値チェック
+          if (normalizedDelta >= sensitivityThreshold) {
+            deltaGauge.classList.remove('bg-cyan-400');
+            deltaGauge.classList.add('bg-rose-500');
+            // 計測待機中または計測中であれば検知処理を実行
+            if (currentState === STATE.ARMED || currentState === STATE.RUNNING) {
+              triggerDetection();
+            }
+          } else {
+            deltaGauge.classList.remove('bg-rose-500');
+            deltaGauge.classList.add('bg-cyan-400');
+          }
+        }
+
+        // 現在フレームを次回比較用にコピー保存
+        prevSamplePixels = new Uint8ClampedArray(pixels);
+
+        // --- ROIオーバーレイ描画 ---
+        drawRoiOverlay(rx, ry, rw, rh);
+      }
+
+      // タイマー数値の更新
+      updateTimerValues();
+
+      requestAnimationFrame(videoProcessingLoop);
+    }
+
+    // --- ROIオーバーレイの描画 ---
+    function drawRoiOverlay(rx, ry, rw, rh) {
+      ctx.save();
+
+      const isTriggered = (performance.now() - lastDetectionTime) < 300;
+
+      // 枠線カラー
+      if (isTriggered) {
+        ctx.strokeStyle = '#f43f5e'; // 赤（検知）
+        ctx.lineWidth = 4;
+        ctx.fillStyle = 'rgba(244, 63, 94, 0.25)';
+      } else if (currentState === STATE.ARMED) {
+        ctx.strokeStyle = '#f59e0b'; // 黄（待機）
+        ctx.lineWidth = 2.5;
+        ctx.fillStyle = 'rgba(245, 158, 11, 0.15)';
+      } else {
+        ctx.strokeStyle = '#10b981'; // 緑（通常）
+        ctx.lineWidth = 2;
+        ctx.fillStyle = 'rgba(16, 185, 129, 0.1)';
+      }
+
+      // 枠内透過塗りつぶし ＆ 枠線
+      ctx.fillRect(rx, ry, rw, rh);
+      ctx.strokeRect(rx, ry, rw, rh);
+
+      // ゲート中央ライン（マシンの通過基準ライン）
+      ctx.beginPath();
+      ctx.setLineDash([4, 4]);
+      ctx.moveTo(rx, ry + rh / 2);
+      ctx.lineTo(rx + rw, ry + rh / 2);
+      ctx.stroke();
+      ctx.setLineDash([]);
+
+      // ゲートラベル
+      ctx.fillStyle = isTriggered ? '#f43f5e' : (currentState === STATE.ARMED ? '#f59e0b' : '#10b981');
+      ctx.font = 'bold 12px monospace';
+      ctx.fillText(isTriggered ? 'TRIGGERED!' : 'GATE (1-LANE)', rx + 6, ry + 16);
+
+      // リサイズ用ハンドル（右下角）
+      const handleSize = 14;
+      ctx.fillStyle = '#00f2fe';
+      ctx.fillRect(rx + rw - handleSize, ry + rh - handleSize, handleSize, handleSize);
+
+      ctx.restore();
+    }
+
+    // --- デジタルタイマーのリアルタイム更新 ---
+    function updateTimerValues() {
+      const now = performance.now();
+
+      if (currentState === STATE.RUNNING) {
+        const lapElapsed = now - lapStartTime;
+        const totalElapsed = now - sessionStartTime;
+
+        mainTimerDisplay.textContent = formatTime(lapElapsed);
+        totalTimerDisplay.textContent = formatTime(totalElapsed);
+      } else if (currentState === STATE.IDLE || currentState === STATE.ARMED) {
+        mainTimerDisplay.textContent = '00:00.000';
+        totalTimerDisplay.textContent = '00:00.000';
+      }
+    }
+
+    // --- ROIのタッチ & マウスインタラクション ---
+    function getCanvasCoordinates(e) {
+      const rect = canvas.getBoundingClientRect();
+      const clientX = e.touches ? e.touches[0].clientX : e.clientX;
+      const clientY = e.touches ? e.touches[0].clientY : e.clientY;
+
+      const scaleX = canvas.width / rect.width;
+      const scaleY = canvas.height / rect.height;
+
+      return {
+        x: (clientX - rect.left) * scaleX,
+        y: (clientY - rect.top) * scaleY
+      };
+    }
+
+    function onPointerDown(e) {
+      const pos = getCanvasCoordinates(e);
+      const rx = roi.x * canvas.width;
+      const ry = roi.y * canvas.height;
+      const rw = roi.w * canvas.width;
+      const rh = roi.h * canvas.height;
+
+      const handleSize = 25; // タップしやすいよう少し広めに判定
+
+      // 右下角のリサイズ判定
+      if (
+        pos.x >= rx + rw - handleSize &&
+        pos.x <= rx + rw + handleSize &&
+        pos.y >= ry + rh - handleSize &&
+        pos.y <= ry + rh + handleSize
+      ) {
+        isResizing = true;
+        dragStart = pos;
+        initialRoi = { ...roi };
+        e.preventDefault();
+        return;
+      }
+
+      // 枠内のドラッグ移動判定
+      if (pos.x >= rx && pos.x <= rx + rw && pos.y >= ry && pos.y <= ry + rh) {
+        isDragging = true;
+        dragStart = pos;
+        initialRoi = { ...roi };
+        e.preventDefault();
+      }
+    }
+
+    function onPointerMove(e) {
+      if (!isDragging && !isResizing) return;
+      const pos = getCanvasCoordinates(e);
+      const dx = (pos.x - dragStart.x) / canvas.width;
+      const dy = (pos.y - dragStart.y) / canvas.height;
+
+      if (isDragging) {
+        roi.x = Math.max(0, Math.min(1 - roi.w, initialRoi.x + dx));
+        roi.y = Math.max(0, Math.min(1 - roi.h, initialRoi.y + dy));
+      } else if (isResizing) {
+        roi.w = Math.max(0.1, Math.min(1 - roi.x, initialRoi.w + dx));
+        roi.h = Math.max(0.1, Math.min(1 - roi.y, initialRoi.h + dy));
+      }
+      e.preventDefault();
+    }
+
+    function onPointerUp() {
+      isDragging = false;
+      isResizing = false;
+    }
+
+    // イベントリスナーの登録（マウス & タッチ対応）
+    canvas.addEventListener('mousedown', onPointerDown);
+    window.addEventListener('mousemove', onPointerMove);
+    window.addEventListener('mouseup', onPointerUp);
+
+    canvas.addEventListener('touchstart', onPointerDown, { passive: false });
+    window.addEventListener('touchmove', onPointerMove, { passive: false });
+    window.addEventListener('touchend', onPointerUp);
+
+    // --- 各種ボタンイベント ---
+
+    // カメラ起動
+    btnStartCamera.addEventListener('click', () => {
+      startCamera();
+    });
+
+    // カメラ切り替え（イン／アウト）
+    btnFlipCamera.addEventListener('click', () => {
+      currentFacingMode = currentFacingMode === 'environment' ? 'user' : 'environment';
+      startCamera();
+    });
+
+    // 枠位置リセット
+    btnResetROI.addEventListener('click', () => {
+      roi = { x: 0.35, y: 0.35, w: 0.30, h: 0.30 };
+    });
+
+    // スタート待機 / ARM
+    btnArm.addEventListener('click', () => {
+      initAudio();
+      currentState = STATE.ARMED;
+      updateUIState();
+    });
+
+    // 中止 / STOP
+    btnStop.addEventListener('click', () => {
+      if (currentState === STATE.RUNNING || currentState === STATE.ARMED) {
+        currentState = STATE.FINISHED;
+        SOUNDS.stop();
+        updateUIState();
+        renderLapTable(); // 確定済みのラップのみを集計表示
+      }
+    });
+
+    // リセット / RESET
+    btnReset.addEventListener('click', () => {
+      currentState = STATE.IDLE;
+      sessionStartTime = 0;
+      lapStartTime = 0;
+      recordedLaps = [];
+      updateUIState();
+      renderLapTable();
+      mainTimerDisplay.textContent = '00:00.000';
+      totalTimerDisplay.textContent = '00:00.000';
+    });
+
+    // 感度スライダー
+    rangeThreshold.addEventListener('input', (e) => {
+      sensitivityThreshold = parseInt(e.target.value, 10);
+      rangeThresholdVal.textContent = sensitivityThreshold;
+      threshValText.textContent = sensitivityThreshold;
+      threshMarker.style.left = `${sensitivityThreshold}%`;
+    });
+
+    // デバウンス時間スライダー
+    rangeDebounce.addEventListener('input', (e) => {
+      debounceSeconds = parseFloat(e.target.value);
+      rangeDebounceVal.textContent = `${debounceSeconds.toFixed(1)} 秒`;
+    });
+
+    // --- 初期化 ---
+    window.onload = () => {
+      threshMarker.style.left = `${sensitivityThreshold}%`;
+      updateUIState();
+      renderLapTable();
+      requestAnimationFrame(videoProcessingLoop);
+    };
+  </script>
+</body>
+</html>
